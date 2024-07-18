@@ -154,6 +154,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                             Shape<Int<kBlockM>, Int<kBlockN>>{},
                             make_stride(params.seqlen_k_rounded, _1{}));
 
+    // NOTE: Shared Memory Layout定义
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
     // Careful we're using the same smem for sQ and sK | sV if Share_Q_K_smem;
@@ -163,9 +164,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposed{});
     Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
 
+    // NOTE: 拷贝Atom所使用的线程排布
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
 
+    // NOTE: 从Global Memory拷贝到Shared Memory所对应原语操作
     Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
     Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K, nblocksN)
@@ -173,6 +176,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K, nblocksN)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
 
+    // NOTE: MMA Atom所使用的线程排布，与拷贝Atom使用的线程排布是不一致的
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
     Tensor tSrQ  = thr_mma.partition_fragment_A(sQ);                           // (MMA,MMA_M,MMA_K)
@@ -186,10 +190,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     //
     // Copy Atom retiling
     //
-
+    // NOTE: MMA计算时候需要将SharedMemory数据拷贝到寄存器，与上述拷贝 Atom不一致
     auto smem_tiled_copy_Q = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
+
+    // NOTE: Shared Memory->Register依据线程拆分
     auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(tidx);
     // if (cute::thread0()) {smem_thr_copy_Q.print_all();}
+
+    // NOTE: 重新分配拷贝源数据的形状
     Tensor tSsQ = smem_thr_copy_Q.partition_S(sQ);
     // if (cute::thread0()) {print(tSsQ.layout()); printf("\n");}
 
